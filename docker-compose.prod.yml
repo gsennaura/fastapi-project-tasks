@@ -1,0 +1,82 @@
+# 🏭 Docker Compose - Production Configuration
+version: '3.8'
+
+services:
+  # 🗄️ PostgreSQL Database - Production
+  postgres:
+    image: postgres:15-alpine
+    container_name: fastapi-postgres-prod
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-projectsdb}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --lc-collate=C --lc-ctype=C"
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    networks:
+      - fastapi-network-prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+    # No exposed ports - internal communication only
+
+  # FastAPI Application - Production
+  fastapi-app:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: fastapi-app-prod
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-projectsdb}
+      API_KEY: ${API_KEY}
+      PAGINATION_MAX_PAGE_SIZE: ${PAGINATION_MAX_PAGE_SIZE:-100}
+      DEBUG: "false"
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    networks:
+      - fastapi-network-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: always
+    # Security: run as non-root user (defined in Dockerfile)
+
+  # 🔄 Nginx Reverse Proxy (Optional)
+  nginx:
+    image: nginx:alpine
+    container_name: fastapi-nginx-prod
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/ssl:/etc/nginx/ssl:ro
+    networks:
+      - fastapi-network-prod
+    depends_on:
+      - fastapi-app
+    restart: always
+    profiles:
+      - nginx
+
+volumes:
+  postgres_data_prod:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /opt/fastapi-data/postgres  # Production data directory
+
+networks:
+  fastapi-network-prod:
+    driver: bridge
+    name: fastapi-prod-network
