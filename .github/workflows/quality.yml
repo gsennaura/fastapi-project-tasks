@@ -1,0 +1,180 @@
+name: Code Quality
+
+on:
+  pull_request:
+    branches: [ dev, main ]
+  push:
+    branches: [ main ]
+
+jobs:
+  quality-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Needed for SonarCloud
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pytest pytest-cov black ruff mypy
+
+    - name: Run tests with coverage
+      run: |
+        pytest tests/test_simple.py tests/test_integration_simple.py tests/test_main.py tests/unit/ \
+          --cov=app \
+          --cov-report=xml \
+          --cov-report=html \
+          --cov-report=term-missing \
+          --junitxml=pytest-results.xml
+
+    - name: Code complexity analysis
+      run: |
+        pip install radon
+        radon cc app/ --json > complexity-report.json
+        radon mi app/ --json > maintainability-report.json
+
+    - name: Generate code metrics
+      run: |
+        echo "📊 Code Metrics Summary" > code-metrics.md
+        echo "======================" >> code-metrics.md
+        echo "" >> code-metrics.md
+        
+        # Lines of code
+        echo "**Lines of Code:**" >> code-metrics.md
+        find app/ -name "*.py" -exec wc -l {} + | tail -1 | awk '{print "- Total: " $1 " lines"}' >> code-metrics.md
+        echo "" >> code-metrics.md
+        
+        # Test coverage
+        coverage report --format=markdown >> code-metrics.md
+        
+        # Complexity
+        echo "" >> code-metrics.md
+        echo "**Complexity Analysis:**" >> code-metrics.md
+        radon cc app/ --show-complexity >> code-metrics.md
+
+    - name: Upload test results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: test-results
+        path: |
+          pytest-results.xml
+          htmlcov/
+          coverage.xml
+          complexity-report.json
+          maintainability-report.json
+          code-metrics.md
+
+    - name: Comment PR with metrics
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const fs = require('fs');
+          
+          try {
+            const metrics = fs.readFileSync('code-metrics.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 📊 Code Quality Report\n\n${metrics}`
+            });
+          } catch (error) {
+            console.log('Could not read metrics file:', error);
+          }
+
+  # Optional: SonarCloud integration
+  sonarcloud:
+    runs-on: ubuntu-latest
+    if: false  # Enable this when you have SonarCloud setup
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: SonarCloud Scan
+      uses: SonarSource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  performance-test:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_USER: testuser
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install locust
+
+    - name: Set up environment
+      run: |
+        cp .env.example .env
+        echo "DATABASE_URL=postgresql://testuser:testpass@localhost:5432/testdb" >> .env
+
+    - name: Run migrations
+      run: |
+        alembic upgrade head
+
+    - name: Start application
+      run: |
+        uvicorn app.main:app --host 0.0.0.0 --port 8000 &
+        sleep 10  # Wait for app to start
+
+    - name: Basic performance test
+      run: |
+        echo "🚀 Running basic performance test..."
+        
+        # Simple load test with curl
+        for i in {1..50}; do
+          curl -s -o /dev/null -w "%{http_code} %{time_total}s\n" \
+            -H "Authorization: Bearer dev-secret-key" \
+            http://localhost:8000/health
+        done > performance-results.txt
+        
+        echo "Performance test completed"
+        cat performance-results.txt
+
+    - name: Upload performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-results
+        path: performance-results.txt

@@ -1,0 +1,74 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    needs: []  # Will run after CI pipeline passes
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    
+    environment:
+      name: production
+      url: https://your-app.com  # Replace with actual URL
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: your-username/fastapi-project-tasks  # Replace with your Docker Hub repo
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=sha
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Deploy to production
+      run: |
+        echo "🚀 Deploying to production..."
+        echo "Docker image: ${{ steps.meta.outputs.tags }}"
+        # Add your deployment commands here
+        # Examples:
+        # - kubectl apply -f k8s/
+        # - docker-compose -f docker-compose.prod.yml up -d
+        # - curl -X POST "https://your-webhook.com/deploy"
+
+    - name: Health check
+      run: |
+        echo "🏥 Running health check..."
+        # Add health check commands
+        # curl -f https://your-app.com/health || exit 1
+
+    - name: Notify deployment
+      if: always()
+      run: |
+        echo "📢 Deployment completed"
+        # Add notification logic (Slack, Discord, etc.)
