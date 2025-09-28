@@ -1,0 +1,120 @@
+name: Security & Dependencies
+
+on:
+  schedule:
+    - cron: '0 2 * * 1'  # Every Monday at 2 AM
+  workflow_dispatch:  # Allow manual trigger
+  pull_request:
+    paths:
+      - 'requirements.txt'
+      - 'Dockerfile'
+
+jobs:
+  dependency-review:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v3
+      with:
+        fail-on-severity: moderate
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install bandit safety semgrep
+
+    - name: Run comprehensive security scan
+      run: |
+        echo "🔍 Running security scans..."
+        
+        # Bandit - Python security linter
+        bandit -r app/ -f json -o bandit-results.json
+        
+        # Safety - Check known security vulnerabilities
+        safety check --json --output safety-results.json
+        
+        # Semgrep - Static analysis
+        semgrep --config=auto app/ --json --output=semgrep-results.json
+
+    - name: Upload security results
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: security-scan-results
+        path: |
+          bandit-results.json
+          safety-results.json
+          semgrep-results.json
+
+    - name: Docker security scan
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'python:3.11-slim'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v2
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  dependency-update:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install pip-tools
+      run: |
+        python -m pip install --upgrade pip
+        pip install pip-tools
+
+    - name: Update dependencies
+      id: update
+      run: |
+        # This would require a requirements.in file
+        # pip-compile requirements.in
+        # git diff --exit-code requirements.txt || echo "dependencies_updated=true" >> $GITHUB_OUTPUT
+        echo "🔄 Dependency update check completed"
+
+    - name: Create Pull Request
+      if: steps.update.outputs.dependencies_updated == 'true'
+      uses: peter-evans/create-pull-request@v5
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: 'chore: update dependencies'
+        title: 'chore: update dependencies'
+        body: |
+          Automated dependency update
+          
+          - Updated by GitHub Actions
+          - Please review and test before merging
+        branch: chore/update-dependencies
